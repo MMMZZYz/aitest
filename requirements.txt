@@ -1,0 +1,12 @@
+# 需求 → 测试点 MD、测试点 → 用例 Excel
+openai>=1.0.0
+python-dotenv>=1.0.0
+tenacity>=8.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+jsonschema>=4.0.0
+pypdf>=4.0.0
+
+# Web 上传 XMind 生成 Excel（可选）
+fastapi>=0.100.0
+uvicorn>=0.20.0
