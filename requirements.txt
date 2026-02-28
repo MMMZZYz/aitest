@@ -1,4 +1,4 @@
-# 需求 → 测试点 MD、测试点 → 用例 Excel
+# 项目依赖：需求解析、LLM 调用、Excel/XMind 处理、Web 服务等
 openai>=1.0.0
 python-dotenv>=1.0.0
 tenacity>=8.0.0

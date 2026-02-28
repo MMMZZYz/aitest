@@ -1,4 +1,4 @@
-# generate_cases_mvp.py
+# XMind → Excel 核心逻辑。解析 XMind 叶子节点，调 LLM 生成用例并填 Excel，供 Step3 和 app_cases 使用。
 import os
 import re
 import json

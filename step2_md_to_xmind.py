@@ -1,18 +1,21 @@
 """
-步骤2：将 outputs/test_points.md 转为 XMind 测试点文档（Zen 格式，便于步骤3解析）。
-用法：python step2_md_to_xmind.py [outputs/test_points.md]
-输出：outputs/test_points.xmind
+# MD → XMind。将 测试点分析.md 转为 测试点.xmind（Zen 格式），供 Step3 解析。
+步骤2：将 outputs/测试点分析.md 转为 XMind 测试点文档（Zen 格式，便于步骤3解析）。
+用法：python step2_md_to_xmind.py [outputs/测试点分析.md]
+输出：outputs/测试点.xmind（或 OUTPUT_DIR 下）
 """
 import json
+import os
 import re
 import zipfile
 import time
 import uuid
 from pathlib import Path
 
-OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs"
-DEFAULT_MD = OUTPUTS_DIR / "test_points.md"
-DEFAULT_XMIND = OUTPUTS_DIR / "test_points.xmind"
+_out = os.environ.get("OUTPUT_DIR")
+OUTPUTS_DIR = Path(_out) if _out else Path(__file__).resolve().parent / "outputs"
+DEFAULT_MD = OUTPUTS_DIR / "测试点分析.md"
+DEFAULT_XMIND = OUTPUTS_DIR / "测试点.xmind"
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)\s*$")
 BULLET_RE = re.compile(r"^\s*[-*+]\s+(.*)\s*$")
@@ -143,12 +146,10 @@ def main() -> None:
     import sys
     md_file = Path(sys.argv[1]) if len(sys.argv) >= 2 else DEFAULT_MD
     if not md_file.exists():
-        raise SystemExit(f"MD 文件不存在: {md_file}\n请先运行 step1_req_to_md.py 生成 outputs/test_points.md")
+        raise SystemExit(f"MD 文件不存在: {md_file}\n请先运行 step1_req_to_md.py 生成 测试点分析.md")
 
     out_file = DEFAULT_XMIND
-    root_title = md_file.stem.replace("test_points", "测试点").replace("_", " ")
-    if root_title == "test_points" or root_title == "测试点":
-        root_title = "测试点"
+    root_title = "测试点"
 
     md_to_xmind_zen(str(md_file), str(out_file), root_title=root_title)
     print(f"[Step2] MD → XMind 完成: {out_file}")

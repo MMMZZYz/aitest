@@ -1,3 +1,4 @@
+# 旧版：用 xmind 库将 MD 转 XMind，与 step2 的 Zen 自实现独立。
 import re
 from pathlib import Path
 

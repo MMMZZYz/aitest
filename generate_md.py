@@ -1,4 +1,4 @@
-# generate_md.py
+# 旧版：需求 → 测试点 MD（固定 schema），未接图片识别和 5W1H。
 import os
 import re
 import json

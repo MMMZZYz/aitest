@@ -1,4 +1,4 @@
-# xmind_export_zen.py
+# 将六维测试点 dict 导出为 XMind Zen 格式，供 generate.py 使用。
 import os, json, zipfile, time, uuid
 from collections import defaultdict
 

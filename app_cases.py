@@ -1,3 +1,4 @@
+# FastAPI 服务：上传需求文档/PDF/图片生成测试点 MD，或上传 XMind 生成 Excel 用例。
 import io
 import os
 import tempfile

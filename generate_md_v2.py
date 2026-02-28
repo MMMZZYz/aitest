@@ -1,9 +1,13 @@
-# generate_md_v2.py
+# 需求 → 测试点核心逻辑（含 get_req_text、图片识别、5W1H、llm_generate_struct、build_test_point_prompt 等）
 import base64
-import os
 import json
+import os
+import re
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.request import urlopen, Request
 
 from dotenv import load_dotenv
 from jsonschema import validate
@@ -98,6 +102,104 @@ def image_to_requirement_text(image_path: str) -> str:
         temperature=0.2,
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+# 图片引用正则：![alt](url_or_path)
+_IMG_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def _download_image_to_temp(url: str) -> str:
+    """从 URL 下载图片到临时文件，返回本地路径。"""
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=30) as resp:
+        data = resp.read()
+        ct = resp.headers.get("Content-Type", "")
+    ext = ".png"
+    if "jpeg" in ct or "jpg" in ct:
+        ext = ".jpg"
+    elif "webp" in ct:
+        ext = ".webp"
+    fd, path = tempfile.mkstemp(suffix=ext)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    return path
+
+
+def enrich_markdown_with_image_content(md_text: str, base_dir: str = ".") -> str:
+    """
+    解析 Markdown 中的图片引用 ![](url)，用视觉模型识别图片内容，
+    将识别结果替换原图片引用，使需求分析/测试点生成能利用图中信息。
+
+    base_dir: 解析相对路径时的基准目录（通常为 md 文件所在目录）。
+    """
+    base_path = Path(base_dir) if base_dir else Path(".")
+
+    def _replace_one(match: re.Match) -> str:
+        alt = match.group(1) or "图片"
+        url_or_path = match.group(2).strip()
+        local_path: Optional[str] = None
+
+        if url_or_path.startswith(("http://", "https://")):
+            try:
+                local_path = _download_image_to_temp(url_or_path)
+            except Exception:
+                return match.group(0)
+        else:
+            full = (base_path / url_or_path).resolve()
+            if full.exists() and full.is_file():
+                local_path = str(full)
+            else:
+                return match.group(0)
+
+        if not local_path:
+            return match.group(0)
+
+        try:
+            recognized = image_to_requirement_text(local_path)
+        except Exception:
+            recognized = ""
+        finally:
+            if url_or_path.startswith(("http://", "https://")):
+                try:
+                    os.unlink(local_path)
+                except OSError:
+                    pass
+
+        if recognized:
+            return f"\n\n<!-- 图片「{alt}」识别结果：\n{recognized}\n-->\n\n"
+        return match.group(0)
+
+    return _IMG_REF_RE.sub(_replace_one, md_text)
+
+
+def read_markdown_with_images(path: str) -> str:
+    """
+    读取 Markdown 文件，并对其中嵌入的图片（URL 或相对路径）调用视觉模型识别，
+    返回合并了识别结果的需求正文。
+    """
+    text = read_text(path)
+    base_dir = str(Path(path).resolve().parent)
+    return enrich_markdown_with_image_content(text, base_dir)
+
+
+def get_req_text(in_path: Path | str, prefix: str = "[解析]") -> str:
+    """
+    根据文件类型获取需求正文（统一入口，避免多处重复解析）。
+    prefix: 日志前缀，如 [Step0]、[Step1]、[解析]。
+    """
+    p = Path(in_path) if not isinstance(in_path, Path) else in_path
+    if p.suffix.lower() in IMAGE_EXTENSIONS:
+        print(f"{prefix} 检测到图片需求，识别图中内容…")
+        return image_to_requirement_text(str(p))
+    if p.suffix.lower() == PDF_EXTENSION:
+        print(f"{prefix} 检测到 PDF，解析正文…")
+        return read_pdf_text(str(p))
+    if p.suffix.lower() in (".md", ".markdown"):
+        print(f"{prefix} 检测到 Markdown，解析正文并识别内嵌图片…")
+        return read_markdown_with_images(str(p))
+    return read_text(str(p))
 
 
 def llm_generate_struct_from_image(image_path: str) -> Dict[str, Any]:
@@ -226,33 +328,17 @@ SCHEMA: Dict[str, Any] = {
 }
 
 
-def llm_generate_struct(req_text: str) -> Dict[str, Any]:
-    goods_ctx = ""
-    if os.path.exists(CONTEXT_GOODS_PATH):
-        goods_ctx = read_text(CONTEXT_GOODS_PATH)
-
-    prompt_parts: List[str] = []
-    prompt_parts.append("你是资深软件测试工程师，输出用于评审的【测试点清单模板】。")
-    if goods_ctx:
-        prompt_parts.append("【业务上下文】（供参考）：")
-        prompt_parts.append(goods_ctx)
-
-    prompt_parts.append("【需求正文】：")
-    prompt_parts.append(req_text)
-
-    # 风格与格式约束，不写死 section 标题，由模型根据需求正文归纳
-    prompt_parts.append(
-        r"""
+_TEST_POINT_INSTRUCTIONS = r"""
 严格只输出 JSON，不要任何解释文字。
 
-输出必须是“清单式测试点模板”，且必须完全根据【需求正文】归纳出一级、二级结构：
-- section 的 title：根据需求中的功能模块/业务块自行归纳（如“一、xxx”“二、xxx”），不要使用与需求无关的固定标题。
+输出必须是"清单式测试点模板"，且必须完全根据【需求正文】归纳出一级、二级结构：
+- section 的 title：根据需求中的功能模块/业务块自行归纳（如"一、xxx""二、xxx"），不要使用与需求无关的固定标题。
 - subsections：每个 section 下按测试维度拆分子标题（如 1️⃣ 展示与交互、2️⃣ 校验逻辑 等），子标题和 points/tables/callouts 都要紧扣该需求。
 
 风格要求：
-- points 必须是【短条目/短短句】，不要以“验证/确认/校验/检查/测试”开头，不要写成用例句式。
+- points 必须是【短条目/短短句】，不要以"验证/确认/校验/检查/测试"开头，不要写成用例句式。
 - 需要表格的地方用 tables 输出（如勾选逻辑、状态矩阵等）。
-- 需要强调的边界/异常用 callouts 输出，title 以 “⚠️” 开头，例如 “⚠️ 边界点”。
+- 需要强调的边界/异常用 callouts 输出，title 以 "⚠️" 开头，例如 "⚠️ 边界点"。
 
 JSON 结构示例（section 数量、标题、子标题均按需求灵活组织，至少 1 个 section）：
 {
@@ -274,9 +360,29 @@ JSON 结构示例（section 数量、标题、子标题均按需求灵活组织�
 
 注意：tables 的 rows 每行必须与 headers 列数一致。sections 至少 1 项，建议根据需求拆成 3～7 个一级模块为宜。
 """
-    )
 
-    prompt = "\n\n".join(prompt_parts)
+
+def build_test_point_prompt(req_text: str) -> str:
+    """
+    根据解析后的需求正文，构建发给 AI 的「测试点生成」完整提示。
+    返回的是 user 角色的 content，不含 system 消息。
+    """
+    goods_ctx = ""
+    if os.path.exists(CONTEXT_GOODS_PATH):
+        goods_ctx = read_text(CONTEXT_GOODS_PATH)
+
+    parts: List[str] = ["你是资深软件测试工程师，输出用于评审的【测试点清单模板】。"]
+    if goods_ctx:
+        parts.append("【业务上下文】（供参考）：")
+        parts.append(goods_ctx)
+    parts.append("【需求正文】：")
+    parts.append(req_text)
+    parts.append(_TEST_POINT_INSTRUCTIONS)
+    return "\n\n".join(parts)
+
+
+def llm_generate_struct(req_text: str) -> Dict[str, Any]:
+    prompt = build_test_point_prompt(req_text)
 
     resp = client.chat.completions.create(
         model=MODEL,

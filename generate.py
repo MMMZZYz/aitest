@@ -1,4 +1,4 @@
-# generate.py
+# 旧版：需求 → 六维测试点（功能/边界/异常/权限/性能/隐藏雷点）JSON + Excel + XMind，另一套结构。
 import os
 import json
 import sys
