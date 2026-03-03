@@ -24,5 +24,12 @@ env/
 .DS_Store
 Thumbs.db
 
-# 生成结果（每次运行产出）
-outputs/
+# 以下目录只保留空文件夹结构（.gitkeep），不提交内部文件
+inputs/*
+!inputs/.gitkeep
+outputs/*
+!outputs/.gitkeep
+xmind_excel_input/*
+!xmind_excel_input/.gitkeep
+xmind_excel_output/*
+!xmind_excel_output/.gitkeep

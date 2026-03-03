@@ -1,19 +1,20 @@
 """
-# 一键流水线入口：列出 inputs/ 下的 md，交互选择后依次执行 Step0→Step1→Step2→Step3，输出到 outputs/<需求文件名>/
+# 流程1：需求 → 需求分析 + 测试点 + XMind（不生成测试用例）
+# 一键流水线：列出 inputs/ 下的需求文件，交互选择后依次执行 Step0 → Step1 → Step2。
 #
 用法：
   python run_pipeline.py
-     从 inputs/ 列出需求 md 文件，交互选择后执行。
+     从 inputs/ 列出需求文件（.md / .txt / .pdf / 图片），交互选择后执行。
   python run_pipeline.py inputs/我的需求.md
      指定需求文件路径，直接执行。
 
 目录约定：
   inputs/    放入需求文档（.md / .txt / .pdf 或图片）
-  outputs/  按需求文件名创建子文件夹，不覆盖历史结果
-            outputs/<需求文件名>/需求分析.md、测试点分析.md、测试点.xmind、测试用例.xlsx
-  templates/ 放置 用例模板.xlsx（可选）
+  outputs/  按需求文件名创建子文件夹
+            outputs/<需求文件名>/需求分析.md、测试点分析.md、对话记录.md、测试点.xmind
 
 说明：Step0 与 Step1 共享同一次解析结果，仅识别内嵌图片一次。
+生成测试用例请使用流程2：python run_xmind_to_cases.py <你的测试点.xmind>
 """
 import os
 import sys
@@ -24,22 +25,27 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def _list_md_files() -> list[Path]:
-    """列出 inputs 下所有 .md / .markdown 文件。"""
+def _list_input_files() -> list[Path]:
+    """列出 inputs 下所有需求文件：.md / .txt / .pdf 或图片（.png / .jpg / .jpeg / .webp）。"""
     inputs_dir = ROOT / "inputs"
     if not inputs_dir.exists():
         return []
+    patterns = ["*.md", "*.markdown", "*.txt", "*.pdf", "*.png", "*.jpg", "*.jpeg", "*.webp"]
+    seen = set()
     files = []
-    for pat in ["*.md", "*.markdown"]:
-        files.extend(sorted(inputs_dir.glob(pat)))
-    return [p for p in files if p.is_file()]
+    for pat in patterns:
+        for p in sorted(inputs_dir.glob(pat)):
+            if p.is_file() and p not in seen:
+                seen.add(p)
+                files.append(p)
+    return sorted(files, key=lambda p: p.name.lower())
 
 
 def _select_input() -> Path:
-    """交互选择需求 md 文件。"""
-    files = _list_md_files()
+    """交互选择需求文件。"""
+    files = _list_input_files()
     if not files:
-        raise SystemExit("未在 inputs/ 下找到任何 .md 文件，请放入后再运行。")
+        raise SystemExit("未在 inputs/ 下找到任何需求文件（.md / .txt / .pdf / 图片），请放入后再运行。")
     if len(files) == 1:
         print(f"检测到 1 个需求文件: {files[0].name}")
         return files[0]
@@ -109,15 +115,7 @@ def main() -> None:
     finally:
         sys.argv = argv_before
 
-    # Step3: XMind → Excel
-    sys.argv = [sys.argv[0]]
-    try:
-        import step3_xmind_to_excel
-        step3_xmind_to_excel.main()
-    finally:
-        sys.argv = argv_before
-
-    print(f"\n✅ 流水线全部完成。输出目录: {output_dir}")
+    print(f"\n✅ 流程1 完成。输出目录: {output_dir}")
 
 
 if __name__ == "__main__":
