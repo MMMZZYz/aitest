@@ -15,23 +15,48 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 try:
+    from gemini_native import gemini_chat as _gemini_chat
+    from gemini_native import gemini_vision as _gemini_vision
+except ImportError:
+    _gemini_chat = _gemini_vision = None  # type: ignore[assignment]
+
+try:
     import json_repair
 except ImportError:
     json_repair = None  # type: ignore[assignment]
 
 load_dotenv()
 
-# ===== DashScope(OpenAI compatible) =====
-API_KEY = os.getenv("DASHSCOPE_API_KEY")
-if not API_KEY:
-    raise SystemExit("Missing DASHSCOPE_API_KEY in .env")
 
-BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-plus")
-# 视觉模型：用于从需求截图/文档图中提取文字（需开通多模态能力）
-VISION_MODEL = os.getenv("DASHSCOPE_VISION_MODEL", "qwen-vl-plus")
+def _get_llm_config():
+    """优先使用 Gemini（原生 SDK），否则使用 DashScope。"""
+    if os.getenv("GEMINI_API_KEY"):
+        return {
+            "provider": "gemini",
+            "api_key": os.getenv("GEMINI_API_KEY"),
+            "base_url": os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+            "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            "vision_model": os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash"),
+        }
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        raise SystemExit("请在 .env 里配置 GEMINI_API_KEY 或 DASHSCOPE_API_KEY")
+    return {
+        "provider": "dashscope",
+        "api_key": api_key,
+        "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "model": os.getenv("DASHSCOPE_MODEL", "qwen-plus"),
+        "vision_model": os.getenv("DASHSCOPE_VISION_MODEL", "qwen-vl-plus"),
+    }
 
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+
+_cfg = _get_llm_config()
+USE_NATIVE_GEMINI = _cfg.get("provider") == "gemini"
+API_KEY = _cfg["api_key"]
+BASE_URL = _cfg["base_url"]
+MODEL = _cfg["model"]
+VISION_MODEL = _cfg["vision_model"]
+client = None if USE_NATIVE_GEMINI else OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 ROOT = Path(__file__).resolve().parent
 CONTEXT_GOODS_PATH = "context.md"
@@ -94,20 +119,23 @@ def image_to_requirement_text(image_path: str) -> tuple[str, str]:
 - 若为需求文档/说明：提取并整理为条理清晰的需求正文（可保留小标题与要点）。
 - 若为界面截图/原型图：描述页面元素、功能入口、主要操作与业务逻辑。
 不要做纯 OCR 式的文字识别；重点理解图所表达的逻辑与需求。只输出需求正文，不要输出“根据图片……”等前缀。"""
-    resp = client.chat.completions.create(
-        model=VISION_MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        temperature=0.2,
-    )
-    req_text = (resp.choices[0].message.content or "").strip()
+    if USE_NATIVE_GEMINI and _gemini_vision:
+        req_text = _gemini_vision(VISION_MODEL, data_url, prompt, temperature=0.2)
+    else:
+        resp = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            temperature=0.2,
+        )
+        req_text = (resp.choices[0].message.content or "").strip()
     vision_md = (
         "## 第1轮：图片识别\n\n**User**\n\n(已发送图片)\n\n" + prompt + "\n\n**Assistant**\n\n" + req_text
     )
@@ -246,15 +274,25 @@ def llm_req_analysis_5w1h(req_text: str) -> str:
 【需求正文】
 {req_text}
 """
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "你输出一篇简洁的 Markdown 需求分析，语言浅显易懂。"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
-    )
-    raw = (resp.choices[0].message.content or "").strip()
+    if USE_NATIVE_GEMINI and _gemini_chat:
+        raw = _gemini_chat(
+            MODEL,
+            [
+                {"role": "system", "content": "你输出一篇简洁的 Markdown 需求分析，语言浅显易懂。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+    else:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "你输出一篇简洁的 Markdown 需求分析，语言浅显易懂。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
     # 若模型用 ```markdown 包裹，去掉
     if raw.startswith("```"):
         lines = raw.split("\n")
@@ -428,12 +466,15 @@ def _build_two_turn_messages(req_text: str) -> List[Dict[str, str]]:
     if goods_ctx:
         # 第一次：只发 context
         messages.append({"role": "user", "content": goods_ctx})
-        resp1 = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=0.1,
-        )
-        reply1 = (resp1.choices[0].message.content or "").strip() or "好的，我已理解上述规则，请提供需求正文。"
+        if USE_NATIVE_GEMINI and _gemini_chat:
+            reply1 = _gemini_chat(MODEL, messages, temperature=0.1) or "好的，我已理解上述规则，请提供需求正文。"
+        else:
+            resp1 = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                temperature=0.1,
+            )
+            reply1 = (resp1.choices[0].message.content or "").strip() or "好的，我已理解上述规则，请提供需求正文。"
         messages.append({"role": "assistant", "content": reply1})
 
     # 第二次：发需求正文；无 context 时追加最小输出格式说明，保证能解析
@@ -446,13 +487,15 @@ def llm_generate_struct(req_text: str) -> tuple[Dict[str, Any], str]:
     """返回 (测试点结构 dict, 完整对话记录 Markdown)。"""
     messages = _build_two_turn_messages(req_text)
 
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=0.2,
-    )
-
-    raw = resp.choices[0].message.content or ""
+    if USE_NATIVE_GEMINI and _gemini_chat:
+        raw = _gemini_chat(MODEL, messages, temperature=0.2) or ""
+    else:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.2,
+        )
+        raw = resp.choices[0].message.content or ""
     conversation_md = _format_conversation_md(messages, raw)
     json_str = extract_json(raw)
     try:

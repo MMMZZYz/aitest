@@ -5,12 +5,47 @@ import json
 import zipfile
 import io
 import tempfile
+from pathlib import Path
 from typing import List, Dict, Any
 
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+try:
+    from gemini_native import gemini_chat as _gemini_chat
+except ImportError:
+    _gemini_chat = None  # type: ignore[assignment]
+
+_PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
+_CASES_SYSTEM_PATH = _PROMPT_DIR / "cases_system.txt"
+_CASES_USER_PATH = _PROMPT_DIR / "cases_user.txt"
+
+_DEFAULT_SYSTEM = "输出必须是严格JSON。"
+_DEFAULT_USER_TEMPLATE = """
+你是资深测试工程师。根据“测试点路径”生成测试用例。
+测试点路径：{{TEST_POINT_PATH}}
+
+要求：
+- 输出 1~3 条测试用例（不要太多）
+- 每条用例包含：title / preconditions / steps / expected / priority
+- steps 和 expected 要一一对应、可执行
+- 只能输出严格 JSON，不要解释、不要Markdown
+
+输出JSON格式：
+{
+  "cases": [
+    {
+      "title": "...",
+      "preconditions": ["..."],
+      "steps": ["1...", "2..."],
+      "expected": ["1...", "2..."],
+      "priority": "High|Medium|Low"
+    }
+  ]
+}
+""".strip()
 
 
 # ========= 1) 解析 XMind =========
@@ -64,47 +99,52 @@ def parse_xmind_leaf_paths(xmind_path: str) -> List[List[str]]:
     return leaf
 
 
-# ========= 2) 调千问（OpenAI兼容） =========
+# ========= 2) 提示词与 LLM 调用 =========
+def _load_cases_system() -> str:
+    """从 prompt/cases_system.txt 读取系统提示词，不存在则用默认。"""
+    if _CASES_SYSTEM_PATH.exists():
+        return _CASES_SYSTEM_PATH.read_text(encoding="utf-8").strip()
+    return _DEFAULT_SYSTEM
+
+
+def _load_cases_user_template() -> str:
+    """从 prompt/cases_user.txt 读取用户提示词模板，不存在则用默认。"""
+    if _CASES_USER_PATH.exists():
+        return _CASES_USER_PATH.read_text(encoding="utf-8").strip()
+    return _DEFAULT_USER_TEMPLATE
+
+
 def build_prompt(path: List[str]) -> str:
     """
-    超简 prompt：给一个测试点路径，让模型产出可执行用例 JSON。
+    根据测试点路径拼出用户 prompt。内容来自 prompt/cases_user.txt，占位符 {{TEST_POINT_PATH}} 会被替换。
     """
-    return f"""
-你是资深测试工程师。根据“测试点路径”生成测试用例。
-测试点路径：{" > ".join(path)}
-
-要求：
-- 输出 1~3 条测试用例（不要太多）
-- 每条用例包含：title / preconditions / steps / expected / priority
-- steps 和 expected 要一一对应、可执行
-- 只能输出严格 JSON，不要解释、不要Markdown
-
-输出JSON格式：
-{{
-  "cases": [
-    {{
-      "title": "...",
-      "preconditions": ["..."],
-      "steps": ["1...", "2..."],
-      "expected": ["1...", "2..."],
-      "priority": "High|Medium|Low"
-    }}
-  ]
-}}
-""".strip()
+    template = _load_cases_user_template()
+    return template.replace("{{TEST_POINT_PATH}}", " > ".join(path))
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
-def llm_generate(client: OpenAI, model: str, prompt: str) -> List[Dict[str, Any]]:
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": "输出必须是严格JSON。"},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    text = (resp.choices[0].message.content or "").strip()
+def llm_generate(client: Any, model: str, prompt: str) -> List[Dict[str, Any]]:
+    system_content = _load_cases_system()
+    if client is None and _gemini_chat:
+        text = _gemini_chat(
+            model,
+            [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        text = (text or "").strip()
+    else:
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        text = (resp.choices[0].message.content or "").strip()
 
     # 兼容 ```json 包裹
     if text.startswith("```"):
@@ -199,12 +239,18 @@ def generate_cases_from_xmind_bytes(xmind_bytes: bytes, template_xlsx: str) -> b
     将上传的 XMind bytes + 本地模板，生成 Excel bytes（用于 Web 下载）。
     """
     load_dotenv()
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    model = os.getenv("QWEN_MODEL", "qwen-plus")
-
-    if not api_key:
-        raise SystemExit("缺少 DASHSCOPE_API_KEY（请在 .env 里配置）")
+    use_gemini_native = bool(os.getenv("GEMINI_API_KEY"))
+    if use_gemini_native:
+        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        api_key = os.getenv("GEMINI_API_KEY")
+        client = None
+    else:
+        api_key = os.getenv("DASHSCOPE_API_KEY")
+        base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        model = os.getenv("QWEN_MODEL", "qwen-plus")
+        client = OpenAI(api_key=api_key, base_url=base_url) if api_key else None
+    if not api_key and not use_gemini_native:
+        raise SystemExit("请在 .env 里配置 GEMINI_API_KEY 或 DASHSCOPE_API_KEY")
     if not os.path.exists(template_xlsx):
         raise SystemExit(f"找不到模板文件：{template_xlsx}")
 
@@ -218,8 +264,6 @@ def generate_cases_from_xmind_bytes(xmind_bytes: bytes, template_xlsx: str) -> b
         if not leaf_paths:
             raise SystemExit("没有解析到有效的 XMind 叶子节点（测试点）")
         print(f"[CASES] 解析到叶子测试点数量: {len(leaf_paths)}")
-
-        client = OpenAI(api_key=api_key, base_url=base_url)
         columns = read_template_columns(template_xlsx)
         rows: List[Dict[str, Any]] = []
 

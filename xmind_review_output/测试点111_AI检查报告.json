@@ -1,0 +1,48 @@
+{
+  "summary": {
+    "total_missing": 2,
+    "weak_nodes": 3,
+    "risk_count": 2
+  },
+  "details": [
+    {
+      "type": "missing_branch",
+      "suggest_parent_path": "测试点111/按钮-批量作废",
+      "missing_scene": "权限控制：无批量作废权限的用户是否隐藏该按钮",
+      "reason": "当前测试树覆盖了按钮状态、交互逻辑、校验规则，但未覆盖权限维度——按钮是否根据RBAC策略动态显隐，属安全与合规关键场景"
+    },
+    {
+      "type": "missing_branch",
+      "suggest_parent_path": "测试点111/按钮-批量作废",
+      "missing_scene": "审计追溯：作废操作是否生成完整审计日志（操作人、时间、IP、原始数据快照）",
+      "reason": "现有节点 node-7a33feba 仅提‘操作日志是否记录’，未明确日志字段完整性、不可篡改性、留存周期等审计要求，属等保/ISO27001强相关缺失"
+    },
+    {
+      "type": "insufficient_coverage",
+      "node_id": "node-36d8dda1",
+      "problem": "‘校验逻辑（核心测试点）’为聚合节点，但未分解后端接口级校验（如HTTP状态码、错误码语义、字段级响应体断言），缺乏契约测试视角"
+    },
+    {
+      "type": "insufficient_coverage",
+      "node_id": "node-645ac453",
+      "problem": "‘弹窗逻辑’未覆盖无障碍访问（如屏幕阅读器读取顺序、焦点管理、ARIA标签），不符合WCAG 2.1 AA标准"
+    },
+    {
+      "type": "insufficient_coverage",
+      "node_id": "node-9928bfaa",
+      "problem": "‘部分成功是否支持’仅标注‘需求未说明’，但未推动需求澄清或按默认策略（全成功/部分成功/事务回滚）补充对应验证分支"
+    },
+    {
+      "type": "risk_node",
+      "node_id": "node-36d8dda1",
+      "risk_score": 9,
+      "reason": "校验逻辑是批量作废的准入闸门，若绕过或误判将导致资损（如误作废有效库存）或业务阻塞，且涉及多条件组合与异常路径，复杂度高、影响面广"
+    },
+    {
+      "type": "risk_node",
+      "node_id": "node-083227c5",
+      "risk_score": 8,
+      "reason": "并发与数据一致性直接关联库存扣减准确性，高频并发下易引发超卖或状态不一致，属资金安全高危场景，当前仅列节点无具体压测/分布式锁验证设计"
+    }
+  ]
+}

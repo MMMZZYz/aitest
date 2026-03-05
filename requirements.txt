@@ -1,5 +1,6 @@
 # 项目依赖：需求解析、LLM 调用、Excel/XMind 处理
 openai>=1.0.0
+google-genai>=1.0.0
 python-dotenv>=1.0.0
 tenacity>=8.0.0
 pandas>=2.0.0
